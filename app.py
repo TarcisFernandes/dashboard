@@ -112,7 +112,16 @@ with tab2:
             oportunidades e pontos de atenção para uma reunião de diretoria. Use um tom profissional e direto.
             """
             model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
+
+            # Adicionando configurações de segurança para evitar bloqueios na geração de código
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
+
+            response = model.generate_content(prompt, safety_settings=safety_settings)
             st.markdown("---")
             st.subheader("Análise do Gemini:")
             st.markdown(response.text)
@@ -141,7 +150,16 @@ with tab3:
             Código Python:
             """
             model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
+
+            # Adicionando configurações de segurança para evitar bloqueios na geração de código
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
+
+            response = model.generate_content(prompt, safety_settings=safety_settings)
             codigo_gerado = response.text.strip()
             
             st.markdown("---")
