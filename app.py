@@ -8,15 +8,6 @@ import os
 
 # --- 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA ---
 
-# =================================================================================
-# ATENÇÃO! ALERTA DE SEGURANÇA!
-# A sua chave API está inserida diretamente no código abaixo.
-# Isto é APENAS PARA TESTES LOCAIS.
-# NÃO COMPARTILHE ESTE ARQUIVO COM NINGUÉM E NÃO O ENVIE PARA O GITHUB.
-# Qualquer pessoa com esta chave pode usá-la em seu nome.
-# =================================================================================
-SUA_CHAVE_API = "AIzaSyAXWKA9oEpsPu9UbzCFaiiThiAKOuLLN7o" 
-
 # Configura a página do Streamlit
 st.set_page_config(
     page_title="Dashboard de Vendas com IA",
@@ -24,16 +15,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Configura a API do Gemini com a chave inserida diretamente
-if SUA_CHAVE_API and SUA_CHAVE_API != "SUA_CHAVE_API_AQUI":
-    try:
-        genai.configure(api_key=SUA_CHAVE_API)
-        GEMINI_CONFIGURADO = True
-    except Exception as e:
-        st.error(f"Erro ao configurar a API do Gemini: {e}")
-        GEMINI_CONFIGURADO = False
-else:
-    st.error("ERRO: A chave da API não foi inserida no código. Edite o arquivo app.py e substitua 'SUA_CHAVE_API_AQUI' pela sua chave real.")
+# Configura a API do Gemini usando os segredos do Streamlit
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    GEMINI_CONFIGURADO = True
+except Exception as e:
+    st.error(f"Erro ao configurar a API do Gemini. Verifique se a chave 'GEMINI_API_KEY' está nos segredos do seu app no Streamlit Cloud. Erro: {e}")
     GEMINI_CONFIGURADO = False
 
 
@@ -130,7 +117,7 @@ with tab2:
             st.subheader("Análise do Gemini:")
             st.markdown(response.text)
     elif not GEMINI_CONFIGURADO:
-        st.warning("A funcionalidade de IA está desabilitada. Verifique a configuração da sua chave API no topo do arquivo app.py.")
+        st.warning("A funcionalidade de IA está desabilitada. Verifique a configuração da sua chave API nos segredos do Streamlit.")
 
 # --- ABA 3: PERGUNTE AOS DADOS ---
 with tab3:
@@ -171,4 +158,4 @@ with tab3:
                 st.error(f"Não foi possível executar a consulta. O Gemini pode ter gerado um código inválido. Tente reformular a pergunta. Erro: {e}")
 
     elif pergunta_usuario and not GEMINI_CONFIGURADO:
-        st.warning("A funcionalidade de IA está desabilitada. Verifique a configuração da sua chave API no topo do arquivo app.py.")
+        st.warning("A funcionalidade de IA está desabilitada. Verifique a configuração da sua chave API nos segredos do Streamlit.")
