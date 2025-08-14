@@ -87,8 +87,22 @@ if uploaded_file is not None:
                     if cleaned_dfs:
                         df = pd.concat(cleaned_dfs, ignore_index=True)
                         st.sidebar.info(f"O documento final tem {len(df)} linhas.")
-                    else:
-                        st.error("As tabelas encontradas no PDF estavam vazias.")
+
+                        # --- NOVO: Bloco para garantir que os nomes das colunas sejam únicos ---
+                        new_columns = []
+                        column_counts = {}
+                        for col in df.columns:
+                            # Converte para string para garantir a consistência
+                            col_str = str(col) 
+                            if col_str in column_counts:
+                                column_counts[col_str] += 1
+                                new_columns.append(f"{col_str}_{column_counts[col_str]-1}")
+                            else:
+                                column_counts[col_str] = 1
+                                new_columns.append(col_str)
+                        df.columns = new_columns
+                        # --- FIM DO NOVO BLOCO ---
+
                 else:
                     st.error("Nenhuma tabela foi encontrada neste arquivo PDF.")
             except Exception as e:
