@@ -97,10 +97,15 @@ with tab2:
         st.markdown("Clique no botão para gerar um resumo executivo sobre os dados filtrados.")
         if st.button("Gerar Resumo Analítico", disabled=not GEMINI_CONFIGURADO):
             with st.spinner("Gemini está pensando... 🧠"):
+                # **MUDANÇA AQUI: Usando .to_json() para um formato mais estável**
                 prompt = f"""
-                Você é um analista de dados sênior. Analise os dados de vendas a seguir:
-                Resumo estatístico: {df_filtrado.describe().to_string()}
-                Vendas por categoria: {df_filtrado.groupby('Categoria')['Vendas'].sum().to_string()}
+                Você é um analista de dados sênior. Analise os seguintes dados de vendas, que estão no formato JSON:
+                Resumo estatístico (describe): 
+                {df_filtrado.describe().to_json()}
+                
+                Vendas por categoria: 
+                {df_filtrado.groupby('Categoria')['Vendas'].sum().to_json()}
+
                 Com base nisso, escreva uma análise curta (3 parágrafos) com os principais insights,
                 oportunidades e pontos de atenção para uma reunião de diretoria.
                 """
@@ -127,6 +132,7 @@ with tab3:
 
         if pergunta_usuario and GEMINI_CONFIGURADO:
             with st.spinner("Gemini está consultando os dados... 🕵️"):
+                # **MUDANÇA AQUI: O prompt continua o mesmo, pois não envia dados brutos**
                 prompt = f"""
                 Você é um expert em Pandas. O DataFrame 'df_filtrado' tem as colunas: {df_filtrado.columns.to_list()}.
                 Converta a pergunta do usuário em um único comando de código Python para encontrar a resposta.
@@ -142,7 +148,8 @@ with tab3:
                     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                 }
                 response = model.generate_content(prompt, safety_settings=safety_settings)
-                codigo_gerado = response.text.strip().replace('`python', '').replace('`', '')
+                # Limpeza extra para garantir que o código seja puro
+                codigo_gerado = response.text.strip().replace('```python', '').replace('```', '').strip()
                 
                 st.markdown("---")
                 st.write("🔍 **Código gerado pelo Gemini:**")
