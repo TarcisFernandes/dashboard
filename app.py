@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 import google.generativeai as genai
 import os
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA ---
 
@@ -85,95 +86,3 @@ with tab1:
     col_graf1, col_graf2 = st.columns(2)
     with col_graf1:
         st.subheader("Vendas por Categoria")
-        fig_cat = px.bar(df_filtrado.groupby('Categoria')['Vendas'].sum().reset_index(), x='Categoria', y='Vendas')
-        st.plotly_chart(fig_cat, use_container_width=True)
-    with col_graf2:
-        st.subheader("Vendas por Região")
-        fig_reg = px.pie(df_filtrado.groupby('Regiao')['Vendas'].sum().reset_index(), names='Regiao', values='Vendas')
-        st.plotly_chart(fig_reg, use_container_width=True)
-
-# --- ABA 2: ANÁLISE COM IA ---
-with tab2:
-    st.header("Análise Qualitativa dos Dados com Gemini")
-    st.markdown("Clique no botão abaixo para que o Gemini gere um resumo executivo sobre os dados filtrados.")
-
-    if st.button("Gerar Resumo Analítico", disabled=not GEMINI_CONFIGURADO):
-        with st.spinner("Gemini está pensando... 🧠"):
-            # Prompt para o Gemini: instrui a IA a atuar como um analista de dados
-            prompt = f"""
-            Você é um analista de dados sênior. Analise o resumo dos dados de vendas a seguir:
-            Resumo estatístico:
-            {df_filtrado.describe().to_string()}
-            
-            Vendas por categoria:
-            {df_filtrado.groupby('Categoria')['Vendas'].sum().to_string()}
-
-            Com base nesses números, escreva uma análise curta (3 parágrafos) com os principais insights,
-            oportunidades e pontos de atenção para uma reunião de diretoria. Use um tom profissional e direto.
-            """
-            model = genai.GenerativeModel('gemini-1.5-flash')
-
-            # Adicionando configurações de segurança para evitar bloqueios na geração de código
-            safety_settings = [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            ]
-
-            response = model.generate_content(prompt, safety_settings=safety_settings)
-            st.markdown("---")
-            st.subheader("Análise do Gemini:")
-            st.markdown(response.text)
-    elif not GEMINI_CONFIGURADO:
-        st.warning("A funcionalidade de IA está desabilitada. Verifique a configuração da sua chave API nos segredos do Streamlit.")
-
-# --- ABA 3: PERGUNTE AOS DADOS ---
-with tab3:
-    st.header("Converse com seus Dados")
-    st.markdown("Faça uma pergunta em linguagem natural sobre os dados. Exemplos: 'Qual produto vendeu mais?' ou 'qual a média de vendas da região sul?'")
-
-    pergunta_usuario = st.text_input("Sua pergunta:", key="pergunta_ia")
-
-    if pergunta_usuario and GEMINI_CONFIGURADO:
-        with st.spinner("Gemini está consultando os dados para você... 🕵️"):
-            # Prompt avançado: instrui a IA a traduzir a pergunta para código Python
-            prompt = f"""
-            Você é um expert em Pandas. O usuário está trabalhando com um DataFrame chamado 'df_filtrado'
-            com as seguintes colunas: {df_filtrado.columns.to_list()}.
-            
-            Converta a seguinte pergunta do usuário em um único comando de código Python que possa ser
-            executado para encontrar a resposta. Retorne APENAS o código, sem explicações, sem `print()`,
-            sem aspas ou formatação de código.
-            
-            Pergunta: "{pergunta_usuario}"
-            Código Python:
-            """
-            model = genai.GenerativeModel('gemini-1.5-flash')
-
-            # Adicionando configurações de segurança para evitar bloqueios na geração de código
-            safety_settings = [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            ]
-
-            response = model.generate_content(prompt, safety_settings=safety_settings)
-            codigo_gerado = response.text.strip()
-            
-            st.markdown("---")
-            st.write("🔍 **Gemini interpretou sua pergunta e gerou o seguinte código para encontrar a resposta:**")
-            st.code(codigo_gerado, language='python')
-
-            try:
-                # ATENÇÃO: Executar código gerado dinamicamente é um risco.
-                # Para esta ferramenta de apresentação interna, é aceitável, mas requer cuidado.
-                resultado = eval(codigo_gerado, {"df_filtrado": df_filtrado, "pd": pd})
-                st.write("✅ **Resultado:**")
-                st.write(resultado)
-            except Exception as e:
-                st.error(f"Não foi possível executar a consulta. O Gemini pode ter gerado um código inválido. Tente reformular a pergunta. Erro: {e}")
-
-    elif pergunta_usuario and not GEMINI_CONFIGURADO:
-        st.warning("A funcionalidade de IA está desabilitada. Verifique a configuração da sua chave API nos segredos do Streamlit.")
