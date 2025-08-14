@@ -7,11 +7,12 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import camelot
 import os
+import re
 
 # --- 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA ---
 
 st.set_page_config(
-    page_title="Analisador de Documentos com IA",
+    page_title="Análise de Auditoria de Vendas",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -26,178 +27,165 @@ except Exception as e:
 # --- FUNÇÕES AUXILIARES ---
 
 @st.cache_data
-def classificar_colunas(df):
-    """Analisa o DataFrame e classifica as colunas em numéricas, categóricas e de data."""
-    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-    
-    potential_date_cols = []
-    categorical_cols_copy = categorical_cols[:]
-    
-    for col in categorical_cols_copy:
-        try:
-            temp_col = pd.to_datetime(df[col], errors='coerce')
-            if temp_col.notna().sum() / len(df) > 0.8:
-                potential_date_cols.append(col)
-        except (TypeError, ValueError):
-            continue
+def limpar_e_estruturar_dados(df_bruto):
+    """Função especializada para limpar e reestruturar o DataFrame extraído do PDF de auditoria."""
+    # Renomeia as colunas extraídas, resolvendo o problema de 'ID' duplicado
+    df_bruto.columns = ['ID_Cliente', 'Razao_Social_Completa', 'Vendedor', 'Valor_Comissao', 'ID_Contrato', 'Status_Contrato', 'Data_Cancelamento']
+
+    # Itera sobre cada linha para corrigir os dados misturados
+    for index, row in df_bruto.iterrows():
+        # Tenta encontrar um valor de comissão (ex: 15.00) no campo 'Razao_Social_Completa'
+        match = re.search(r'(\d+\.\d{2})$', str(row['Razao_Social_Completa']).strip())
+        if match:
+            comissao_extraida = float(match.group(1))
+            # Atualiza o valor da comissão na sua coluna correta
+            df_bruto.loc[index, 'Valor_Comissao'] = comissao_extraida
             
-    categorical_cols = [col for col in categorical_cols if col not in potential_date_cols]
+            # Remove o valor da comissão e o que estiver depois dele do campo principal
+            resto_string = str(row['Razao_Social_Completa']).strip()[:match.start()].strip()
+            
+            # A heurística aqui é complexa. Vamos assumir que nomes de vendedores conhecidos podem ser encontrados.
+            # Por simplicidade, vamos apenas limpar o campo por enquanto.
+            # Uma lógica mais avançada poderia ser adicionada aqui para separar cliente de vendedor.
+            df_bruto.loc[index, 'Razao_Social_Completa'] = resto_string
+
+    # Converte os tipos de dados para os corretos
+    df_bruto['Valor_Comissao'] = pd.to_numeric(df_bruto['Valor_Comissao'], errors='coerce')
+    df_bruto['Data_Cancelamento'] = pd.to_datetime(df_bruto['Data_Cancelamento'], format='%d/%m/%Y', errors='coerce')
+    df_bruto.rename(columns={'Razao_Social_Completa': 'Razao_Social'}, inplace=True)
     
-    return numeric_cols, categorical_cols, potential_date_cols
+    # Remove linhas onde a comissão não pôde ser convertida para número
+    df_bruto.dropna(subset=['Valor_Comissao'], inplace=True)
+    
+    return df_bruto
+
 
 # --- SIDEBAR E LÓGICA DE UPLOAD ---
 
 st.sidebar.title("Configurações")
 uploaded_file = st.sidebar.file_uploader(
-    "Faça o upload do seu arquivo (CSV ou PDF)",
-    type=['csv', 'pdf']
+    "Faça o upload do seu relatório de auditoria (PDF)",
+    type=['pdf']
 )
 
 df = None
 
 if uploaded_file is not None:
-    file_extension = uploaded_file.name.split('.')[-1].lower()
-
-    if file_extension == 'csv':
-        df = pd.read_csv(uploaded_file)
-
-    elif file_extension == 'pdf':
-        with st.spinner("Lendo tabelas do PDF... Isso pode levar um momento."):
-            try:
-                temp_pdf_path = f"./temp_{uploaded_file.name}"
-                with open(temp_pdf_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+    with st.spinner("Lendo e processando o relatório PDF... Isso pode levar alguns minutos."):
+        try:
+            temp_pdf_path = f"./temp_{uploaded_file.name}"
+            with open(temp_pdf_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            # Usar 'lattice' pode ser melhor para tabelas com linhas visíveis, 'stream' para as baseadas em espaço
+            tables = camelot.read_pdf(temp_pdf_path, pages='all', flavor='stream')
+            os.remove(temp_pdf_path)
+            
+            if tables:
+                df_bruto = pd.concat([table.df for table in tables], ignore_index=True)
                 
-                tables = camelot.read_pdf(temp_pdf_path, pages='all', flavor='stream')
-                os.remove(temp_pdf_path)
+                # Remove o cabeçalho repetido em cada página
+                df_bruto = df_bruto[~df_bruto[0].isin(['ID', ''])]
                 
-                if len(tables) > 0:
-                    st.sidebar.success(f"{len(tables)} segmento(s) de tabela encontrado(s) e combinado(s).")
-                    
-                    cleaned_dfs = []
-                    for table in tables:
-                        temp_df = table.df
-                        if not temp_df.empty:
-                            new_header = temp_df.iloc[0]
-                            temp_df = temp_df[1:]
-                            temp_df.columns = new_header
-                            cleaned_dfs.append(temp_df)
-                    
-                    if cleaned_dfs:
-                        df = pd.concat(cleaned_dfs, ignore_index=True)
-                        st.sidebar.info(f"O documento final tem {len(df)} linhas.")
+                df = limpar_e_estruturar_dados(df_bruto)
+                st.sidebar.success(f"Relatório processado! {len(df)} vendas analisadas.")
+            else:
+                st.error("Nenhuma tabela foi encontrada neste arquivo PDF.")
 
-                        # --- NOVO: Bloco para garantir que os nomes das colunas sejam únicos ---
-                        new_columns = []
-                        column_counts = {}
-                        for col in df.columns:
-                            # Converte para string para garantir a consistência
-                            col_str = str(col) 
-                            if col_str in column_counts:
-                                column_counts[col_str] += 1
-                                new_columns.append(f"{col_str}_{column_counts[col_str]-1}")
-                            else:
-                                column_counts[col_str] = 1
-                                new_columns.append(col_str)
-                        df.columns = new_columns
-                        # --- FIM DO NOVO BLOCO ---
+        except Exception as e:
+            st.error(f"Ocorreu um erro ao processar o PDF: {e}")
 
-                else:
-                    st.error("Nenhuma tabela foi encontrada neste arquivo PDF.")
-            except Exception as e:
-                st.error(f"Ocorreu um erro ao processar o PDF: {e}")
+# --- DASHBOARD PRINCIPAL ---
 
-# --- PROCESSAMENTO DO DATAFRAME E GERAÇÃO DA DASHBOARD ---
 if df is not None:
-    df = df.rename(columns=lambda x: str(x).strip())
-    
-    numeric_cols, categorical_cols, date_cols = classificar_colunas(df)
-    
-    for col in date_cols:
-        df[col] = pd.to_datetime(df[col], errors='coerce')
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    df.dropna(how='all', inplace=True)
+    st.title("📊 Dashboard de Auditoria de Vendas e Comissões")
+    st.markdown(f"Análise do Relatório: **{uploaded_file.name}**")
 
+    # --- FILTROS ---
     st.sidebar.markdown("---")
-    st.sidebar.title("Filtros Dinâmicos")
+    st.sidebar.title("Filtros")
     
-    filtros = {}
-    colunas_filtragem = categorical_cols + date_cols
-    for col in colunas_filtragem:
-        if col in date_cols and not df[col].isnull().all():
-            min_date, max_date = df[col].min(), df[col].max()
-            filtro_data = st.sidebar.date_input(f"Filtro para {col}", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-            if len(filtro_data) == 2:
-                filtros[col] = filtro_data
-        elif col in categorical_cols:
-            opcoes = df[col].dropna().unique()
-            selecao = st.sidebar.multiselect(f"Filtro para {col}", options=opcoes, default=opcoes)
-            filtros[col] = selecao
+    vendedores = df['Vendedor'].dropna().unique()
+    status = df['Status_Contrato'].dropna().unique()
 
-    df_filtrado = df.copy()
-    for col, valores in filtros.items():
-        if col in date_cols and pd.api.types.is_datetime64_any_dtype(df_filtrado[col]):
-            df_filtrado = df_filtrado[(df_filtrado[col].dt.date >= valores[0]) & (df_filtrado[col].dt.date <= valores[1])]
-        else:
-            df_filtrado = df_filtrado[df_filtrado[col].isin(valores)]
+    vendedor_selecionado = st.sidebar.multiselect("Filtrar por Vendedor:", options=vendedores, default=vendedores)
+    status_selecionado = st.sidebar.multiselect("Filtrar por Status do Contrato:", options=status, default=status)
 
-    st.title("🚀 Dashboard Analítica Gerada por IA")
-    st.markdown(f"Análise do arquivo: `{uploaded_file.name}`")
+    df_filtrado = df[df['Vendedor'].isin(vendedor_selecionado) & df['Status_Contrato'].isin(status_selecionado)]
 
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard Dinâmica", "🤖 Análise com IA", "🔍 Visualizar Dados"])
+    # --- ABAS DA DASHBOARD ---
+    tab1, tab2, tab3 = st.tabs(["📈 Resumo Geral", "🧑‍💼 Análise por Vendedor", "🤖 Análise com IA"])
 
     with tab1:
-        st.header("Indicadores Chave (KPIs)")
-        if not numeric_cols:
-            st.warning("Nenhuma coluna numérica encontrada para gerar KPIs.")
-        else:
-            coluna_kpi = st.selectbox("Selecione a coluna numérica para os KPIs:", numeric_cols)
-            if coluna_kpi and not df_filtrado.empty:
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric(f"Soma de {coluna_kpi}", f"{df_filtrado[coluna_kpi].sum():,.2f}")
-                col2.metric(f"Média de {coluna_kpi}", f"{df_filtrado[coluna_kpi].mean():,.2f}")
-                col3.metric(f"Valor Máximo", f"{df_filtrado[coluna_kpi].max():,.2f}")
-                col4.metric(f"Contagem de Registros", df_filtrado.shape[0])
+        st.header("Visão Geral das Comissões")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Comissão Total", f"R$ {df_filtrado['Valor_Comissao'].sum():,.2f}")
+        col2.metric("Nº de Vendas", f"{len(df_filtrado)}")
+        col3.metric("Comissão Média", f"R$ {df_filtrado['Valor_Comissao'].mean():,.2f}")
         
+        contratos_inativos = df_filtrado[df_filtrado['Status_Contrato'] == 'Inativo'].shape[0]
+        col4.metric("Contratos Cancelados", f"{contratos_inativos}")
+
         st.markdown("---")
-        st.header("Visualização Gráfica")
-        if not categorical_cols or not numeric_cols:
-            st.warning("É necessário ter ao menos uma coluna categórica e uma numérica para gerar gráficos.")
-        else:
-            col_cat_grafico = st.selectbox("Selecione a coluna para o Eixo X (Categórica):", categorical_cols)
-            col_num_grafico = st.selectbox("Selecione a coluna para o Eixo Y (Numérica):", numeric_cols)
-            
-            if col_cat_grafico and col_num_grafico and not df_filtrado.empty:
-                agg_df = df_filtrado.groupby(col_cat_grafico, as_index=False)[col_num_grafico].sum()
-                fig = px.bar(agg_df, x=col_cat_grafico, y=col_num_grafico, title=f"{col_num_grafico} por {col_cat_grafico}")
-                st.plotly_chart(fig, use_container_width=True)
+        
+        col_graf1, col_graf2 = st.columns(2)
+        with col_graf1:
+            st.subheader("Distribuição de Status dos Contratos")
+            status_counts = df_filtrado['Status_Contrato'].value_counts()
+            fig_pie = px.pie(status_counts, values=status_counts.values, names=status_counts.index, hole=.3)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        with col_graf2:
+            st.subheader("Cancelamentos ao Longo do Tempo")
+            cancelamentos = df_filtrado[df_filtrado['Data_Cancelamento'].notna()]
+            cancel_por_mes = cancelamentos.set_index('Data_Cancelamento').resample('M').size().rename("Nº de Cancelamentos")
+            if not cancel_por_mes.empty:
+                st.line_chart(cancel_por_mes)
+            else:
+                st.info("Não há dados de cancelamento para o período filtrado.")
 
     with tab2:
-        st.header("Análise Qualitativa com Gemini")
-        if df_filtrado.empty:
-            st.warning("Não há dados para analisar com os filtros selecionados.")
-        elif not numeric_cols:
-            st.warning("Não há colunas numéricas para gerar análise estatística.")
-        else:
-            if st.button("Gerar Análise dos Dados Filtrados", disabled=not GEMINI_CONFIGURADO):
-                with st.spinner("Gemini está analisando seus dados... 🧠"):
-                    prompt = f"""
-                    Você é um analista de dados. Analise o seguinte conjunto de dados.
-                    Resumo estatístico (JSON): {df_filtrado[numeric_cols].describe().to_json()}
-                    5 primeiras linhas: {df_filtrado.head().to_string()}
-                    Com base nisso, escreva uma análise geral com insights, tendências ou pontos de atenção.
-                    """
-                    model = genai.GenerativeModel('gemini-pro')
-                    response = model.generate_content(prompt)
-                    st.subheader("Análise Gerada por IA:")
-                    st.markdown(response.text)
+        st.header("Performance por Vendedor")
+        
+        # Calcula as métricas por vendedor
+        vendas_por_vendedor = df_filtrado.groupby('Vendedor').agg(
+            Comissao_Total=('Valor_Comissao', 'sum'),
+            Numero_de_Vendas=('Vendedor', 'count')
+        ).reset_index().sort_values('Comissao_Total', ascending=False)
+
+        st.subheader("Top Vendedores por Comissão Total")
+        fig_bar_comissao = px.bar(vendas_por_vendedor.head(10), x='Vendedor', y='Comissao_Total', text_auto='.2s')
+        fig_bar_comissao.update_traces(textangle=0, textposition="outside")
+        st.plotly_chart(fig_bar_comissao, use_container_width=True)
+
+        st.subheader("Top Vendedores por Número de Vendas")
+        fig_bar_vendas = px.bar(vendas_por_vendedor.sort_values('Numero_de_Vendas', ascending=False).head(10), x='Vendedor', y='Numero_de_Vendas')
+        st.plotly_chart(fig_bar_vendas, use_container_width=True)
 
     with tab3:
-        st.header("Visualização dos Dados Filtrados")
-        st.dataframe(df_filtrado)
+        st.header("Análise Avançada com IA")
+        st.info("A IA do Gemini pode analisar os dados filtrados para encontrar insights.")
+
+        if st.button("Gerar Análise com IA", disabled=not GEMINI_CONFIGURADO):
+            with st.spinner("Gemini está pensando... 🧠"):
+                
+                # Prepara um resumo dos dados para a IA
+                resumo_vendedores = df_filtrado.groupby('Vendedor')['Valor_Comissao'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False).to_string()
+
+                prompt = f"""
+                Você é um diretor de vendas analisando um relatório de comissões da empresa SUPERTEC TELECOM.
+                Os dados filtrados mostram o seguinte resumo de performance por vendedor:
+                {resumo_vendedores}
+
+                Com base nesses números, escreva uma análise executiva curta (3 a 4 parágrafos) destacando:
+                1. Os vendedores com melhor performance (em valor total e em quantidade de vendas).
+                2. Quaisquer discrepâncias interessantes (ex: vendedor com muitas vendas mas baixa comissão total, ou vice-versa).
+                3. Uma recomendação de ação baseada nos dados.
+                """
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                st.subheader("Análise Gerada pelo Gemini:")
+                st.markdown(response.text)
 
 else:
-    st.info("👋 Bem-vindo! Por favor, faça o upload de um arquivo CSV ou PDF para começar.")
+    st.info("👋 Bem-vindo à Dashboard de Auditoria! Por favor, faça o upload do seu relatório PDF para começar.")
