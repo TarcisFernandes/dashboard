@@ -4,13 +4,12 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import google.generativeai as genai
-import os
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA ---
 
 st.set_page_config(
-    page_title="Dashboard Dinâmica com IA",
+    page_title="Analisador de CSV com IA",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -19,28 +18,31 @@ try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     GEMINI_CONFIGURADO = True
 except Exception as e:
-    st.error(f"Erro ao configurar a API do Gemini. Verifique se a chave 'GEMINI_API_KEY' está nos segredos. Erro: {e}")
+    st.error(f"Erro ao configurar a API do Gemini. Verifique a chave 'GEMINI_API_KEY' nos segredos. Erro: {e}")
     GEMINI_CONFIGURADO = False
 
-# --- 2. UPLOAD E PROCESSAMENTO DO ARQUIVO ---
+# --- FUNÇÕES AUXILIARES ---
 
-# MANTÉM A VERIFICAÇÃO ROBUSTA DENTRO DE UMA FUNÇÃO AUXILIAR
-def processar_dataframe(df):
-    """Verifica e processa o DataFrame para garantir que a coluna 'Data' está correta."""
-    try:
-        # Garante que a coluna 'Data' existe e a converte para datetime
-        df['Data'] = pd.to_datetime(df['Data'])
-        return df
-    except KeyError:
-        st.error(
-            f"Erro Crítico: A coluna 'Data' não foi encontrada no arquivo enviado.\n\n"
-            f"**Colunas encontradas:** {list(df.columns)}\n\n"
-            "Por favor, renomeie a coluna de data no seu arquivo CSV para 'Data' (com 'D' maiúsculo) e envie novamente."
-        )
-        return None
-    except Exception as e:
-        st.error(f"Ocorreu um erro ao processar a coluna de data: {e}")
-        return None
+@st.cache_data
+def classificar_colunas(df):
+    """Analisa o DataFrame e classifica as colunas em numéricas, categóricas e de data."""
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    
+    # Tenta identificar colunas de data que podem ter sido lidas como 'object'
+    potential_date_cols = []
+    for col in categorical_cols:
+        try:
+            # Tenta converter a coluna para datetime sem gerar erros na maioria das linhas
+            if pd.to_datetime(df[col], errors='coerce').notna().sum() > 0.8 * len(df):
+                potential_date_cols.append(col)
+        except (TypeError, ValueError):
+            continue
+            
+    # Remove as colunas de data da lista de categóricas
+    categorical_cols = [col for col in categorical_cols if col not in potential_date_cols]
+    
+    return numeric_cols, categorical_cols, potential_date_cols
 
 # --- SIDEBAR E LÓGICA DE UPLOAD ---
 
@@ -52,93 +54,109 @@ uploaded_file = st.sidebar.file_uploader(
 
 # A LÓGICA PRINCIPAL DO APP AGORA DEPENDE DO UPLOAD
 if uploaded_file is not None:
-    # Carrega os dados do arquivo enviado
     df = pd.read_csv(uploaded_file)
-    df = processar_dataframe(df)
+    
+    # Classifica as colunas do DataFrame enviado
+    numeric_cols, categorical_cols, date_cols = classificar_colunas(df)
+    
+    # Converte colunas de data identificadas
+    for col in date_cols:
+        df[col] = pd.to_datetime(df[col])
 
-    # Continua a execução somente se o DataFrame for válido
-    if df is not None:
-        st.sidebar.markdown("---")
-        st.sidebar.title("Filtros Interativos")
-        regiao = st.sidebar.multiselect("Selecione a Região:", options=df["Regiao"].unique(), default=df["Regiao"].unique())
-        categoria = st.sidebar.multiselect("Selecione a Categoria:", options=df["Categoria"].unique(), default=df["Categoria"].unique())
-        df_filtrado = df[df["Regiao"].isin(regiao) & df["Categoria"].isin(categoria)]
+    # --- GERAÇÃO DINÂMICA DE FILTROS ---
+    st.sidebar.markdown("---")
+    st.sidebar.title("Filtros Dinâmicos")
+    
+    # Cria um dicionário para armazenar os filtros aplicados
+    filtros = {}
+    
+    # Cria filtros para colunas categóricas e de data
+    colunas_filtragem = categorical_cols + date_cols
+    for col in colunas_filtragem:
+        if col in date_cols:
+            # Filtro de intervalo de datas
+            min_date = df[col].min()
+            max_date = df[col].max()
+            filtro_data = st.sidebar.date_input(f"Filtro para {col}", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+            if len(filtro_data) == 2:
+                filtros[col] = filtro_data
+        else:
+            # Filtro de múltipla seleção
+            opcoes = df[col].unique()
+            selecao = st.sidebar.multiselect(f"Filtro para {col}", options=opcoes, default=opcoes)
+            filtros[col] = selecao
 
-        # --- LAYOUT DA DASHBOARD COM ABAS ---
+    # Aplica os filtros ao DataFrame
+    df_filtrado = df.copy()
+    for col, valores in filtros.items():
+        if col in date_cols:
+            df_filtrado = df_filtrado[(df_filtrado[col] >= pd.to_datetime(valores[0])) & (df_filtrado[col] <= pd.to_datetime(valores[1]))]
+        else:
+            df_filtrado = df_filtrado[df_filtrado[col].isin(valores)]
 
-        st.title("🚀 Dashboard Dinâmica com Gemini AI")
-        st.markdown("Use as abas para navegar entre a visualização e a análise dos seus dados.")
 
-        tab1, tab2, tab3 = st.tabs(["📊 Resumo Visual", "🤖 Análise com IA", "💬 Pergunte aos Dados"])
+    # --- LAYOUT DA DASHBOARD DINÂMICA ---
 
-        # --- ABA 1: RESUMO VISUAL ---
-        with tab1:
-            if not df_filtrado.empty:
-                st.header("Principais Indicadores (KPIs)")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Vendas Totais", f"R$ {df_filtrado['Vendas'].sum():,.2f}")
-                col2.metric("Ticket Médio", f"R$ {df_filtrado['Vendas'].mean():,.2f}")
-                col3.metric("Nº de Vendas", df_filtrado.shape[0])
-                st.markdown("---")
-                st.header("Visualizações Gráficas")
-                # Gráficos... (código omitido para brevidade, mas está no bloco acima)
-            else:
-                st.warning("Nenhum dado disponível para os filtros selecionados.")
+    st.title("🚀 Dashboard Analítica Gerada por IA")
+    st.markdown(f"Análise do arquivo: `{uploaded_file.name}`")
+
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard Dinâmica", "🤖 Análise com IA", "🔍 Visualizar Dados"])
+
+    # --- ABA 1: DASHBOARD DINÂMICA ---
+    with tab1:
+        st.header("Indicadores Chave (KPIs)")
+        if not numeric_cols:
+            st.warning("Nenhuma coluna numérica encontrada para gerar KPIs.")
+        else:
+            # Permite ao usuário escolher qual coluna numérica analisar
+            coluna_kpi = st.selectbox("Selecione a coluna numérica para os KPIs:", numeric_cols)
+            if coluna_kpi:
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric(f"Soma de {coluna_kpi}", f"{df_filtrado[coluna_kpi].sum():,.2f}")
+                col2.metric(f"Média de {coluna_kpi}", f"{df_filtrado[coluna_kpi].mean():,.2f}")
+                col3.metric(f"Valor Máximo", f"{df_filtrado[coluna_kpi].max():,.2f}")
+                col4.metric(f"Contagem de Registros", df_filtrado.shape[0])
         
-        # --- ABA 2: ANÁLISE COM IA ---
-        with tab2:
-            st.header("Análise Qualitativa dos Dados com Gemini")
-            if not df_filtrado.empty:
-                if st.button("Gerar Resumo Analítico", disabled=not GEMINI_CONFIGURADO):
-                    with st.spinner("Gemini está pensando... 🧠"):
-                        prompt = f"""
-                        Analise os seguintes dados de vendas no formato JSON e forneça insights:
-                        Resumo estatístico: {df_filtrado.describe().to_json()}
-                        Vendas por categoria: {df_filtrado.groupby('Categoria')['Vendas'].sum().to_json()}
-                        """
-                        model = genai.GenerativeModel('gemini-pro')
-                        safety_settings = {
-                            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                        }
-                        response = model.generate_content(prompt, safety_settings=safety_settings)
-                        st.subheader("Análise do Gemini:")
-                        st.markdown(response.text)
-            else:
-                st.warning("Não há dados para analisar com os filtros selecionados.")
-        
-        # --- ABA 3: PERGUNTE AOS DADOS ---
-        with tab3:
-            st.header("Converse com seus Dados")
-            if not df_filtrado.empty:
-                pergunta_usuario = st.text_input("Sua pergunta:", key="pergunta_ia")
-                if pergunta_usuario and GEMINI_CONFIGURADO:
-                    with st.spinner("Gemini está consultando os dados... 🕵️"):
-                        prompt = f"""
-                        O DataFrame 'df_filtrado' tem as colunas: {df_filtrado.columns.to_list()}.
-                        Converta a pergunta do usuário em um único comando de código Python para encontrar a resposta.
-                        Retorne APENAS o código. Pergunta: "{pergunta_usuario}"
-                        """
-                        model = genai.GenerativeModel('gemini-pro')
-                        safety_settings = {
-                            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                        }
-                        response = model.generate_content(prompt, safety_settings=safety_settings)
-                        codigo_gerado = response.text.strip().replace('```python', '').replace('```', '').strip()
-                        st.code(codigo_gerado, language='python')
-                        try:
-                            resultado = eval(codigo_gerado, {"df_filtrado": df_filtrado, "pd": pd})
-                            st.write("✅ **Resultado:**", resultado)
-                        except Exception as e:
-                            st.error(f"Não foi possível executar o código gerado. Erro: {e}")
-            else:
-                st.warning("Não há dados para consultar com os filtros selecionados.")
+        st.markdown("---")
+        st.header("Visualização Gráfica")
+        if not categorical_cols or not numeric_cols:
+            st.warning("É necessário ter ao menos uma coluna categórica e uma numérica para gerar gráficos.")
+        else:
+            col_cat_grafico = st.selectbox("Selecione a coluna para o Eixo X (Categórica):", categorical_cols)
+            col_num_grafico = st.selectbox("Selecione a coluna para o Eixo Y (Numérica):", numeric_cols)
+            
+            if col_cat_grafico and col_num_grafico:
+                agg_df = df_filtrado.groupby(col_cat_grafico)[col_num_grafico].sum().reset_index()
+                fig = px.bar(agg_df, x=col_cat_grafico, y=col_num_grafico, title=f"{col_num_grafico} por {col_cat_grafico}")
+                st.plotly_chart(fig, use_container_width=True)
 
-# TELA INICIAL ANTES DO UPLOAD
+    # --- ABA 2: ANÁLISE COM IA ---
+    with tab2:
+        st.header("Análise Qualitativa com Gemini")
+        if st.button("Gerar Análise dos Dados Filtrados", disabled=not GEMINI_CONFIGURADO):
+            with st.spinner("Gemini está analisando seus dados... 🧠"):
+                prompt = f"""
+                Você é um analista de dados. Analise o seguinte conjunto de dados de um arquivo CSV.
+                O resumo estatístico das colunas numéricas é (em formato JSON):
+                {df_filtrado[numeric_cols].describe().to_json()}
+
+                As 5 primeiras linhas dos dados são:
+                {df_filtrado.head().to_string()}
+
+                Com base nesses dados, escreva uma análise geral, identificando possíveis insights,
+                tendências ou pontos de atenção. Seja claro e direto.
+                """
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                st.subheader("Análise Gerada por IA:")
+                st.markdown(response.text)
+
+    # --- ABA 3: VISUALIZAR DADOS ---
+    with tab3:
+        st.header("Visualização dos Dados Filtrados")
+        st.dataframe(df_filtrado)
+
+
+# --- TELA INICIAL ANTES DO UPLOAD ---
 else:
-    st.info("👋 Bem-vindo! Por favor, faça o upload de um arquivo CSV na barra lateral para começar a análise.")
+    st.info("👋 Bem-vindo ao Analisador de CSV com IA! Por favor, faça o upload de um arquivo CSV para começar.")
